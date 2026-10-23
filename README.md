@@ -36,12 +36,15 @@ Sunshift is a high-performance optimization engine and executive dashboard built
 4. **Launch the dashboard:**
    ```bash
    streamlit run app.py
-## Testing
 
-Sunshift maintains a strict testing standard. Run the full suite to verify backend integrity:
+5. **Testing**
+   ```bash
+   pytest
 
-```bash
-pytest   
+
+
+
+   
 
 
 ## License
