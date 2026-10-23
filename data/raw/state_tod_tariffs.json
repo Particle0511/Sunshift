@@ -1,0 +1,27 @@
+{
+    "Mumbai": {
+        "base": 8.0,
+        "solar": 6.5,
+        "peak": 10.0
+    },
+    "Hyderabad": {
+        "base": 7.5,
+        "solar": 6.0,
+        "peak": 9.5
+    },
+    "Delhi NCR": {
+        "base": 8.5,
+        "solar": 7.0,
+        "peak": 11.0
+    },
+    "Bengaluru": {
+        "base": 8.0,
+        "solar": 6.5,
+        "peak": 10.5
+    },
+    "Chennai": {
+        "base": 8.2,
+        "solar": 6.8,
+        "peak": 10.8
+    }
+}
