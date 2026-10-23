@@ -46,8 +46,8 @@ def build_features(region, T, S, times, origin_idx, horizons):
     o = np.asarray(origin_idx, dtype=int)
     h = np.asarray(horizons, dtype=int)
     target_time = pd.DatetimeIndex(times[o]) + pd.to_timedelta(h, unit="h")
-    same = o + h - 24 * np.ceil(h / 24.0).astype(int)   # same clock hour, latest observed day
-    same2 = same - 24                                   # ... and the day before that
+    same = o + h - 24 * np.ceil(h / 24.0).astype(int)   
+    same2 = same - 24                                   
 
     hour = np.asarray(target_time.hour)
     doy = np.asarray(target_time.dayofyear)
