@@ -1,9 +1,7 @@
 import hashlib
 import math
-
 import numpy as np
 import pandas as pd
-
 from src.config import (REGIONS, DEFAULT_N_GPUS, MAX_SEARCH_HOURS, DEADLINE_BUFFER_FRAC,
                         MIN_DEADLINE_BUFFER_H, N_SCENARIOS, RISK_AVERSION, CONFIDENCE_EPS,
                         MAX_GPU_HOURS, MAX_DEADLINE_DAYS, now_ist)
@@ -12,27 +10,23 @@ from src.models.forecaster import ClimateForecaster
 
 HOUR = pd.Timedelta(hours=1)
 
-
 class WorkloadOptimizer:
     def __init__(self):
         self.physics = PhysicsEngine()
         self.forecaster = ClimateForecaster()
 
-   
     @staticmethod
     def _plan_job(gpu_hours, deadline_days, is_flexible, n_gpus):
         deadline_h = max(1, int(round(float(deadline_days) * 24)))
         buffer_h = max(MIN_DEADLINE_BUFFER_H, int(round(DEADLINE_BUFFER_FRAC * deadline_h)))
         usable_h = max(1, deadline_h - buffer_h)
-
         n_gpus = int(n_gpus or DEFAULT_N_GPUS)
         duration_h = max(1, math.ceil(gpu_hours / n_gpus))
         scaled = False
-        if duration_h > usable_h:            # cluster too small for the deadline -> assume more GPUs
+        if duration_h > usable_h:
             n_gpus = math.ceil(gpu_hours / usable_h)
             duration_h = max(1, math.ceil(gpu_hours / n_gpus))
             scaled = True
-
         last_start = deadline_h - buffer_h - duration_h
         window = 1 if (not is_flexible or last_start < 0) else min(MAX_SEARCH_HOURS, last_start + 1)
         return {"deadline_h": deadline_h, "buffer_h": buffer_h, "n_gpus": n_gpus,
@@ -47,9 +41,9 @@ class WorkloadOptimizer:
     def _cumsum0(x):
         return np.concatenate([np.zeros((x.shape[0], 1)), np.cumsum(x, axis=1)], axis=1)
 
-  
     def find_best_placement(self, gpu_hours: float, deadline_days: int, weights: dict,
                             is_flexible: bool, usual_region: str = "Mumbai",
+                            domestic_only: bool = True,
                             n_gpus: int = None, n_scenarios: int = None,
                             seed: int = None, now=None) -> dict:
         try:
@@ -60,6 +54,7 @@ class WorkloadOptimizer:
             raise ValueError("gpu_hours must be a positive number")
         if not (math.isfinite(deadline_days) and deadline_days > 0):
             raise ValueError("deadline_days must be a positive number")
+        
         inputs_capped = gpu_hours > MAX_GPU_HOURS or deadline_days > MAX_DEADLINE_DAYS
         gpu_hours, deadline_days = min(gpu_hours, MAX_GPU_HOURS), min(deadline_days, MAX_DEADLINE_DAYS)
         if deadline_days == int(deadline_days):
@@ -68,22 +63,30 @@ class WorkloadOptimizer:
         now = pd.Timestamp(now or now_ist()).replace(minute=0, second=0, microsecond=0)
         plan = self._plan_job(gpu_hours, deadline_days, is_flexible, n_gpus)
         D, W = plan["duration_h"], plan["window"]
-        need = W - 1 + D                                   # forecast hours required
+        need = W - 1 + D
+        
         w = self._normalise_weights(weights)
         S = N_SCENARIOS if n_scenarios is None else int(n_scenarios)
+        
         if usual_region not in REGIONS:
             usual_region = next(iter(REGIONS))
+            
         if seed is None:
             key = f"{gpu_hours}|{deadline_days}|{is_flexible}|{w.round(4).tolist()}|{now:%Y%m%d%H}"
             seed = int(hashlib.md5(key.encode()).hexdigest()[:8], 16)
         rng = np.random.default_rng(seed)
 
-        regions = list(REGIONS)
+        regions = list(REGIONS.keys())
+        if domestic_only:
+            domestic_hubs = {"Mumbai", "Hyderabad", "Delhi NCR", "Bengaluru", "Chennai"}
+            regions = [r for r in regions if r in domestic_hubs]
+
         day_idx = (np.arange(need) + now.hour) // 24
         n_days = int(day_idx.max()) + 1
 
         cost, carbon, water, energy = [], [], [], []
         solar_pct, peak_pct, avg_temp, ml_share = [], [], [], []
+        
         for region in regions:
             f = self.forecaster.get_forecast(region, hours_ahead=need, now=now)
             hours = f["time"].dt.hour.to_numpy()
@@ -91,7 +94,6 @@ class WorkloadOptimizer:
             sig_t, sig_s = f["sigma_temp"].to_numpy(), f["sigma_solar"].to_numpy()
             ml_share.append(float((f["source"] == "ml").mean()))
 
-           
             eps_t = 0.85 * rng.standard_normal((S, n_days))[:, day_idx] + 0.35 * rng.standard_normal((S, need))
             eps_s = 0.85 * rng.standard_normal((S, n_days))[:, day_idx] + 0.35 * rng.standard_normal((S, need))
             temps = np.vstack([t0, t0 + eps_t * sig_t])
@@ -99,9 +101,12 @@ class WorkloadOptimizer:
 
             p = self.physics.hourly_profile(region, hours, temps, sols, plan["n_gpus"])
             cs = {k: self._cumsum0(p[k]) for k in ("cost", "carbon", "water", "kwh")}
-            win = lambda a: a[:, D:D + W] - a[:, :W]       # job total for every start hour
-            cost.append(win(cs["cost"])); carbon.append(win(cs["carbon"]))
-            water.append(win(cs["water"])); energy.append(win(cs["kwh"]))
+            win = lambda a: a[:, D:D + W] - a[:, :W]
+            
+            cost.append(win(cs["cost"]))
+            carbon.append(win(cs["carbon"]))
+            water.append(win(cs["water"]))
+            energy.append(win(cs["kwh"]))
 
             c1 = np.concatenate([[0], np.cumsum(p["is_solar"])])
             c2 = np.concatenate([[0], np.cumsum(p["is_peak"])])
@@ -110,26 +115,27 @@ class WorkloadOptimizer:
             ct = np.concatenate([[0], np.cumsum(t0)])
             avg_temp.append((ct[D:D + W] - ct[:W]) / D)
 
-        M = {"cost": np.stack(cost, 1), "carbon": np.stack(carbon, 1), "water": np.stack(water, 1)}  # (S+1, R, W)
+        M = {"cost": np.stack(cost, 1), "carbon": np.stack(carbon, 1), "water": np.stack(water, 1)}
         kwh = np.stack(energy, 1)
-
 
         score = 0.0
         for wi, k in zip(w, ("cost", "carbon", "water")):
             base = M[k][0]
             lo, span = base.min(), base.max() - base.min()
             score = score + wi * (M[k] - lo) / (span if span > 1e-9 else 1.0)
+            
         sc = score[1:] if S > 0 else score[:1]
-        robust = sc.mean(axis=0) + RISK_AVERSION * sc.std(axis=0)           # (R, W)
+        robust = sc.mean(axis=0) + RISK_AVERSION * sc.std(axis=0)
 
         wr, ww = np.unravel_index(int(np.argmin(robust)), robust.shape)
         best_each = sc.reshape(sc.shape[0], -1).min(axis=1)
         confidence = float(np.mean((sc[:, wr, ww] - best_each) <= CONFIDENCE_EPS))
         label = "High" if confidence >= 0.8 else "Medium" if confidence >= 0.5 else "Low"
 
-        disp = 20 + 80 * np.clip(robust, 0, 1)    
+        disp = 20 + 80 * np.clip(robust, 0, 1)
         emissions = self.physics.emissions
         rows = []
+        
         for r, region in enumerate(regions):
             for i in range(W):
                 start = now + i * HOUR
@@ -149,7 +155,7 @@ class WorkloadOptimizer:
                     "solar_hours_pct": round(float(solar_pct[r][i]), 1),
                     "peak_hours_pct": round(float(peak_pct[r][i]), 1),
                     "avg_temp": round(float(avg_temp[r][i]), 1),
-                    "grid_factor": emissions[region],
+                    "grid_factor": emissions.get(region, 0.0),
                     "score": round(float(disp[r, i]), 1),
                     "score_raw": round(float(robust[r, i]), 4),
                 })
@@ -158,7 +164,9 @@ class WorkloadOptimizer:
         best = dict(index[(regions[wr], int(ww))])
         best["confidence"] = round(confidence, 2)
         best["confidence_label"] = label
-        usual = dict(index[(usual_region, 0)])
+        
+        usual_reg = usual_region if usual_region in regions else regions[0]
+        usual = dict(index[(usual_reg, 0)])
 
         meta = {
             "deadline_days": deadline_days, "deadline_hours": plan["deadline_h"],
@@ -168,10 +176,9 @@ class WorkloadOptimizer:
             "deadline_met": best["hours_from_now"] + D <= plan["deadline_h"],
             "ml_hours_share": round(float(np.mean(ml_share)), 2),
             "inputs_capped": inputs_capped,
-            "usual_region": usual_region, "weights": dict(zip(("cost", "carbon", "water"), w.round(3).tolist())),
+            "usual_region": usual_reg, "weights": dict(zip(("cost", "carbon", "water"), w.round(3).tolist())),
         }
         return {"recommended": best, "usual": usual, "all_options": rows, "meta": meta}
-
 
 if __name__ == "__main__":
     optimizer = WorkloadOptimizer()

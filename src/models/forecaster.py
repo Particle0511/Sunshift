@@ -1,4 +1,3 @@
-
 import joblib
 import numpy as np
 import pandas as pd
@@ -14,8 +13,7 @@ NUM_FEATURES = [
     "t_same_hour_2d", "s_same_hour_2d", "t_mean_7d",
 ]
 FEATURES = ["region"] + NUM_FEATURES
-API_TRUST = 0.6  
-
+API_TRUST = 0.6
 
 def contiguous_tail(df: pd.DataFrame) -> pd.DataFrame:
     if len(df) < 2:
@@ -23,34 +21,35 @@ def contiguous_tail(df: pd.DataFrame) -> pd.DataFrame:
     gaps = np.where(np.diff(df.index.values) != np.timedelta64(1, "h"))[0]
     return df.iloc[gaps[-1] + 1:] if len(gaps) else df
 
-
 def load_hourly(path) -> pd.DataFrame:
     raw = pd.read_csv(path, parse_dates=["time"])
     raw = (raw.dropna(subset=["time"]).drop_duplicates("time")
-              .sort_values("time").set_index("time"))[TARGETS]
+           .sort_values("time").set_index("time"))[TARGETS]
     full = pd.date_range(raw.index[0], raw.index[-1], freq=HOUR)
     raw = raw.reindex(full).interpolate(limit=6, limit_area="inside")
     raw.index.name = "time"
     return contiguous_tail(raw.dropna())
 
-
 def build_features(region, T, S, times, origin_idx, horizons):
     ts, ss = pd.Series(T), pd.Series(S)
+    
     t_mean = ts.rolling(24).mean().to_numpy()
     t_max = ts.rolling(24).max().to_numpy()
     t_min = ts.rolling(24).min().to_numpy()
     s_mean = ss.rolling(24).mean().to_numpy()
     s_max = ss.rolling(24).max().to_numpy()
     t_mean7 = ts.rolling(168).mean().to_numpy()
-
+    
     o = np.asarray(origin_idx, dtype=int)
     h = np.asarray(horizons, dtype=int)
     target_time = pd.DatetimeIndex(times[o]) + pd.to_timedelta(h, unit="h")
-    same = o + h - 24 * np.ceil(h / 24.0).astype(int)   
-    same2 = same - 24                                   
-
+    
+    same = o + h - 24 * np.ceil(h / 24.0).astype(int)
+    same2 = same - 24
+    
     hour = np.asarray(target_time.hour)
     doy = np.asarray(target_time.dayofyear)
+    
     feats = pd.DataFrame({
         "region": region,
         "hour_sin": np.sin(2 * np.pi * hour / 24.0),
@@ -65,22 +64,21 @@ def build_features(region, T, S, times, origin_idx, horizons):
     })
     return feats, target_time
 
-
 class ClimateForecaster:
     def __init__(self):
         self.model_path = MODEL_DIR / "climate_forecaster.joblib"
         if not self.model_path.exists():
             raise FileNotFoundError("Model not found. Run: python -m src.models.train_forecaster")
+            
         artifact = joblib.load(self.model_path)
         if not (isinstance(artifact, dict) and "pipeline" in artifact):
-            raise RuntimeError("climate_forecaster.joblib is in the old format. "
-                               "Re-train with: python -m src.models.train_forecaster")
+            raise RuntimeError("climate_forecaster.joblib is in the old format. Re-train with: python -m src.models.train_forecaster")
+            
         self.artifact = artifact
         self.model = artifact["pipeline"]
         self._sigma = artifact["residual_std"]
         self._cache = {}
 
-    
     def _history(self, region: str) -> pd.DataFrame:
         path = CACHE_DIR / f"{region}_weather.csv"
         if not path.exists():
@@ -100,36 +98,72 @@ class ClimateForecaster:
         idx = np.searchsorted(edges, np.clip(lead_hours, 1, edges[-1]), side="left")
         return vals[idx]
 
-   
     def get_forecast(self, region: str, hours_ahead: int = 120, now=None) -> pd.DataFrame:
         now = pd.Timestamp(now or now_ist()).replace(minute=0, second=0, microsecond=0)
         hours_ahead = int(max(1, hours_ahead))
+        
         hist = self._history(region)
         targets = pd.date_range(now, periods=hours_ahead, freq=HOUR)
-
         api = hist.reindex(targets)
+        
         use_api = (api["temperature"].notna() & api["solar_radiation"].notna()).to_numpy()
         temp = api["temperature"].to_numpy(dtype=float).copy()
         sol = api["solar_radiation"].to_numpy(dtype=float).copy()
-
+        
         lead = np.arange(1, hours_ahead + 1)
         sig_t = self._lookup_sigma(lead, "temperature", region) * API_TRUST
         sig_s = self._lookup_sigma(lead, "solar_radiation", region) * API_TRUST
-
+        
         need_ml = ~use_api
         if need_ml.any():
             origin_time = min(now, hist.index[-1])
             pos = int(hist.index.searchsorted(origin_time, side="right") - 1)
+            
             if pos < 168:
                 raise RuntimeError(f"Weather cache for {region} is too short. Run: python -m src.weather_client")
+                
             gap = (targets[need_ml] - hist.index[pos]) / HOUR
             h = np.maximum(np.rint(np.asarray(gap, dtype=float)).astype(int), 1)
-            feats, _ = build_features(region, hist["temperature"].to_numpy(),
-                                      hist["solar_radiation"].to_numpy(), hist.index,
-                                      np.full(len(h), pos), h)
+            
+            feats, target_times = build_features(region, hist["temperature"].to_numpy(),
+                                                 hist["solar_radiation"].to_numpy(), hist.index,
+                                                 np.full(len(h), pos), h)
+            
             pred = self.model.predict(feats[FEATURES])
-            temp[need_ml] = pred[:, 0]
-            sol[need_ml] = np.clip(pred[:, 1], 0, None)
+            routed_temp = pred[:, 0]
+            routed_solar = np.clip(pred[:, 1], 0, None)
+            
+            hr = target_times.hour.to_numpy()
+            routed_solar[(hr < 6) | (hr >= 19)] = 0.0
+            
+            routing = self.artifact.get("routing")
+            clim_means = self.artifact.get("clim_means")
+            
+            if routing and clim_means:
+                edges = np.asarray(self._sigma["edges"])
+                buckets = np.searchsorted(edges, np.clip(h, 1, edges[-1]), side="left")
+                t_same = feats["t_same_hour"].to_numpy()
+                s_same = feats["s_same_hour"].to_numpy()
+                hr_idx = target_times.hour.to_numpy()
+                
+                for i, b in enumerate(buckets):
+                    method_t = routing["temperature"][b]
+                    if method_t == "pers":
+                        routed_temp[i] = t_same[i]
+                    elif method_t == "clim":
+                        c_dict = clim_means.get((region, hr_idx[i]))
+                        if c_dict: routed_temp[i] = c_dict["y_temperature"]
+                        
+                    method_s = routing["solar"][b]
+                    if method_s == "pers":
+                        routed_solar[i] = s_same[i]
+                    elif method_s == "clim":
+                        c_dict = clim_means.get((region, hr_idx[i]))
+                        if c_dict: routed_solar[i] = c_dict["y_solar"]
+
+            temp[need_ml] = routed_temp
+            sol[need_ml] = np.clip(routed_solar, 0, None)
+            
             sig_t[need_ml] = self._lookup_sigma(h, "temperature", region)
             sig_s[need_ml] = self._lookup_sigma(h, "solar_radiation", region)
 
@@ -141,7 +175,6 @@ class ClimateForecaster:
             "sigma_temp": np.round(sig_t, 3),
             "sigma_solar": np.round(sig_s, 2),
         })
-
 
 if __name__ == "__main__":
     forecaster = ClimateForecaster()

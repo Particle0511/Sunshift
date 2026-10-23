@@ -10,7 +10,6 @@ from src.agent.explainer import ReasonExplainer
 
 st.set_page_config(page_title="Sunshift", layout="wide", initial_sidebar_state="expanded")
 
-
 if "w_cost" not in st.session_state: st.session_state.w_cost = 70
 if "w_carbon" not in st.session_state: st.session_state.w_carbon = 80
 if "w_water" not in st.session_state: st.session_state.w_water = 60
@@ -22,7 +21,6 @@ def sync_carb_num(): st.session_state.w_carbon = st.session_state.carb_num
 def sync_wat_sld(): st.session_state.w_water = st.session_state.wat_sld
 def sync_wat_num(): st.session_state.w_water = st.session_state.wat_num
 
-
 def get_delta_html(usual_val, rec_val):
     if usual_val <= 0: return "<span style='color:#64748b; font-weight:600;'>0% -</span>"
     pct = round(((usual_val - rec_val) / usual_val) * 100)
@@ -33,6 +31,8 @@ def get_delta_html(usual_val, rec_val):
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inria+Serif:wght@300;400;700&display=swap');
+    
+    [data-testid="stAppViewContainer"] { background-color: #F5F0E7; }
 
     html, body, [class*="css"], [class*="st-"] { font-family: 'Inria Serif', serif !important; }
     #MainMenu, footer, header { visibility: hidden; }
@@ -49,7 +49,6 @@ st.markdown("""
         justify-content: space-between;
     }
 
-    /* Premium Light Beige/Grey styling strictly for the left input container */
     [data-testid="stColumn"]:first-of-type > div[data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #f9f8f6;
         border: 1px solid #e5e5e4;
@@ -68,7 +67,6 @@ st.markdown("""
         justify-content: space-between;
     }
 
-    /* Pulsing Animation for the Recommended Badge */
     @keyframes pulse {
         0% { opacity: 1; }
         50% { opacity: 0.6; }
@@ -134,7 +132,7 @@ with left_col:
 
         st.write("")
         st.markdown("<div class='lbl'>DATA MUST STAY IN INDIA</div>", unsafe_allow_html=True)
-        data_india = st.radio("DATA MUST STAY IN INDIA", ["Yes", "No"], horizontal=True, label_visibility="collapsed", help="Regulatory toggle. 'Yes' restricts placement strictly to domestic Indian grid regions.")
+        data_india = st.radio("DATA MUST STAY IN INDIA", ["Yes", "No"], horizontal=True, label_visibility="collapsed", help="Regulatory toggle. 'Yes' restricts placement strictly to domestic Indian grid regions.") == "Yes"
 
         st.markdown("<hr style='margin: 20px 0; border-color: #e5e5e4;'>", unsafe_allow_html=True)
         st.markdown("<div class='lbl'>WHAT MATTERS MOST</div>", unsafe_allow_html=True)
@@ -167,7 +165,7 @@ with left_col:
 with right_col:
     if run_optimization:
         with st.spinner("Analyzing grid tariffs and climate forecasts..."):
-            results = optimizer.find_best_placement(gpu_hours, deadline, weights, is_flexible, usual_region=usual_choice)
+            results = optimizer.find_best_placement(gpu_hours, deadline, weights, is_flexible, usual_region=usual_choice, domestic_only=data_india)
             usual = results["usual"]
             rec = results["recommended"]
             meta = results.get("meta", {"confidence_label": "High", "finish_day": 1, "deadline_days": deadline})
@@ -179,6 +177,9 @@ with right_col:
             start_str = describe_start(start_dt)
         except:
             start_str = f"{'today' if start_dt.date() == datetime.now().date() else 'tomorrow'} at {start_dt.strftime('%I %p').lstrip('0')}"
+
+        if meta.get("n_gpus_scaled"):
+            st.warning(f"⚠️ **Deadline Constraint:** Your {deadline}-day deadline is too tight for the default GPU cluster. Sunshift automatically scaled the simulated cluster to {meta['n_gpus']} GPUs to ensure compliance.")
 
         with st.container(border=True):
             html_card = (
@@ -210,7 +211,6 @@ with right_col:
             c_table, c_graph = st.columns([1.5, 1.1], gap="large")
 
             with c_table:
-             
                 cost_delta_ui = get_delta_html(usual['cost_inr'], rec['cost_inr'])
                 carb_delta_ui = get_delta_html(usual['carbon_kg'], rec['carbon_kg'])
                 wat_delta_ui = get_delta_html(usual['water_liters'], rec['water_liters'])
@@ -251,7 +251,6 @@ with right_col:
             with c_graph:
                 st.markdown("<div style='font-size:18px; margin-bottom:10px; font-weight:700; color:#0f172a;'>Impact Comparison</div>", unsafe_allow_html=True)
 
-             
                 categories = ['Cost', 'Carbon', 'Water']
                 
                 max_cost = max(usual['cost_inr'], rec['cost_inr'], 1)

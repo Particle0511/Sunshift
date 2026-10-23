@@ -13,15 +13,12 @@ CONTRAST_RE = re.compile(r"\b(but|however|though|although|while|whereas|trade-?o
 
 
 class ReasonExplainer:
-   
-
     def __init__(self, model: str = "phi3", base_url: str = "http://localhost:11434"):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_url = f"{self.base_url}/api/generate"
         self._ready = (0.0, False)
 
-    #  facts
     def _build_facts(self, usual: dict, rec: dict, weights=None, meta=None) -> dict:
         try:
             start_dt = datetime.strptime(rec["start_time"], "%Y-%m-%d %H:%M")
@@ -37,7 +34,7 @@ class ReasonExplainer:
             ("water", "water_liters", lambda v: f"uses {indian_number(v)} L less cooling water", lambda v: f"uses {indian_number(v)} L more cooling water"),
         ]
         for name, key, gain_txt, loss_txt in specs:
-            u, r = float(usual[key]), float(rec[key])
+            u, r = float(usual.get(key, 0)), float(rec.get(key, 0))
             if u <= 0:
                 continue
             saved = u - r
@@ -55,10 +52,15 @@ class ReasonExplainer:
                 drivers.append(f"it avoids the evening peak ({rec['peak_hours_pct']:.0f}% of the run versus {usual['peak_hours_pct']:.0f}%)")
             if usual["avg_rate"] - rec["avg_rate"] >= 0.3:
                 drivers.append(f"the average power rate is ₹{rec['avg_rate']:.1f} per kWh versus ₹{usual['avg_rate']:.1f}")
-        if g(rec, "grid_factor") and g(usual, "grid_factor") and usual["grid_factor"] - rec["grid_factor"] >= 0.02 \
-                and rec["region"] != usual["region"]:
+        
+        if g(rec, "grid_factor") and g(usual, "grid_factor") and usual["grid_factor"] - rec["grid_factor"] >= 0.02 and rec["region"] != usual["region"]:
             drivers.append(f"{rec['region']}'s grid emits {rec['grid_factor']:.2f} kg CO₂ per kWh versus {usual['grid_factor']:.2f}")
-        drivers = drivers[:2]
+
+        if g(rec, "avg_temp") is not None and g(usual, "avg_temp") is not None:
+            if usual["avg_temp"] - rec["avg_temp"] >= 2.0:
+                drivers.append(f"the forecast is cooler ({rec['avg_temp']:.1f}°C versus {usual['avg_temp']:.1f}°C), reducing cooling tower evaporation")
+
+        drivers = drivers[:3] 
 
         finish = ""
         if meta and meta.get("finish_day"):
@@ -71,7 +73,7 @@ class ReasonExplainer:
             top = max(weights, key=lambda k: weights[k])
             priority = {"cost": "saving money", "carbon": "cutting carbon", "water": "protecting water"}.get(top)
 
-        seed_src = f"{rec['region']}|{rec['start_time']}|{usual['region']}|{rec['cost_inr']}|{rec['carbon_kg']}"
+        seed_src = f"{rec['region']}|{rec['start_time']}|{usual['region']}|{rec.get('cost_inr',0)}|{rec.get('carbon_kg',0)}"
         facts = {
             "where": rec["region"], "usual_where": usual["region"], "when": when,
             "same_plan": same_plan, "gains": gains, "tradeoffs": tradeoffs,
@@ -82,7 +84,6 @@ class ReasonExplainer:
         facts["numbers"] = {n.replace(",", "") for n in NUM_RE.findall(text_blob)}
         return facts
 
-    # template
     def _template(self, f: dict) -> str:
         if f["same_plan"] or (not f["gains"] and not f["tradeoffs"] and f["where"] == f["usual_where"]):
             return (f"The usual plan in {f['usual_where']} is already the best fit for your priorities, "
@@ -95,6 +96,7 @@ class ReasonExplainer:
             effect = gains[0] if len(gains) == 1 else ", ".join(gains[:-1]) + " and " + gains[-1]
         else:
             effect = "improves the overall balance"
+        
         if f["tradeoffs"]:
             trade = [t for _, t in f["tradeoffs"]]
             effect += ", though it " + (trade[0] if len(trade) == 1 else " and ".join(trade))
@@ -115,7 +117,6 @@ class ReasonExplainer:
             second += f" The job {f['finish']}."
         return first + second
 
-    #  LLM
     def _ollama_ready(self) -> bool:
         checked, ok = self._ready
         if time.time() - checked < 30:
@@ -137,16 +138,22 @@ class ReasonExplainer:
             lines.append(f"- Timing: the job {f['finish']}.")
         if f["priority"]:
             lines.append(f"- The user cares most about {f['priority']}.")
+            if f["priority"] == "protecting water":
+                lines.append("- INSTRUCTION: You must explicitly mention how cooler temperatures or regional water stress metrics drove this decision.")
+
         facts = "\n".join(lines)
         return (
             "You write a short explanation for a cloud scheduling app.\n"
             "Rules: use ONLY the facts below. Never add a number, city or claim that is not listed. "
             "Write 1 or 2 plain sentences, at most 45 words, no lists, no quotes. "
             "Say estimated, never guaranteed.\n\n"
-            "Example facts:\n- Recommendation: run the job in Chennai on Friday at 11 AM instead of starting in Delhi NCR now.\n"
-            "- Benefit: it saves ₹9,000 in electricity.\n- Trade-off (must be mentioned): it uses 400 L more cooling water.\n"
+            "Example facts:\nRecommendation: run the job in Chennai on Friday at 11 AM instead of starting in Delhi NCR now.\n"
+            "- Benefit: it saves ₹9,000 in electricity.\nTrade-off (must be mentioned): it uses 400 L more cooling water.\n"
+            "- Reason: the forecast is cooler (22.0°C versus 29.0°C), reducing cooling tower evaporation.\n"
+            "- The user cares most about protecting water.\n"
+            "- INSTRUCTION: You must explicitly mention how cooler temperatures or regional water stress metrics drove this decision.\n"
             "Example answer: Starting in Chennai on Friday at 11 AM saves an estimated ₹9,000 in electricity, "
-            "though it uses 400 L more cooling water.\n\n"
+            "though it uses 400 L more cooling water. This is driven by cooler regional temperature forecasts reducing evaporation.\n\n"
             f"Facts:\n{facts}\nAnswer:"
         )
 
@@ -195,7 +202,6 @@ class ReasonExplainer:
             return False
         return True
 
-    
     def generate_reason(self, usual: dict, recommended: dict, weights=None, meta=None) -> str:
         facts = self._build_facts(usual, recommended, weights, meta)
         if self._ollama_ready():
@@ -208,8 +214,8 @@ class ReasonExplainer:
 if __name__ == "__main__":
     explainer = ReasonExplainer()
     mock_usual = {"region": "Mumbai", "start_time": "2026-10-22 19:00", "cost_inr": 480000, "carbon_kg": 5900,
-                  "water_liters": 38000, "solar_hours_pct": 0, "peak_hours_pct": 8, "avg_rate": 9.4, "grid_factor": 0.71}
+                  "water_liters": 38000, "solar_hours_pct": 0, "peak_hours_pct": 8, "avg_rate": 9.4, "grid_factor": 0.71, "avg_temp": 29.5}
     mock_rec = {"region": "Hyderabad", "start_time": "2026-10-23 10:00", "cost_inr": 365000, "carbon_kg": 4100,
-                "water_liters": 23500, "solar_hours_pct": 40, "peak_hours_pct": 0, "avg_rate": 7.1, "grid_factor": 0.68}
+                "water_liters": 23500, "solar_hours_pct": 40, "peak_hours_pct": 0, "avg_rate": 7.1, "grid_factor": 0.68, "avg_temp": 24.0}
     meta = {"finish_day": 3, "deadline_days": 5, "deadline_met": True}
     print(explainer.generate_reason(mock_usual, mock_rec, {"cost": .7, "carbon": .8, "water": .6}, meta))
