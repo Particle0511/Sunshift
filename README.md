@@ -41,12 +41,6 @@ Sunshift is a high-performance optimization engine and executive dashboard built
    ```bash
    pytest
 
-
-
-
-   
-
-
 ## License
 
 **MIT License**
