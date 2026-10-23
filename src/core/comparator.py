@@ -24,7 +24,6 @@ class ResultsComparator:
             "carbon_pct": calc_pct(usual["carbon_kg"], recommended["carbon_kg"]),
             "water_saved_liters": water_saved,
             "water_pct": calc_pct(usual["water_liters"], recommended["water_liters"]),
-            # new, additive keys: honest signed changes (a metric can get worse)
             "cost_change": change_label(usual["cost_inr"], recommended["cost_inr"]),
             "carbon_change": change_label(usual["carbon_kg"], recommended["carbon_kg"]),
             "water_change": change_label(usual["water_liters"], recommended["water_liters"]),

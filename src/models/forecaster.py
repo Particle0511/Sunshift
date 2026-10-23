@@ -1,13 +1,4 @@
-"""
-Hybrid weather forecaster.
 
-* Hours covered by the cached Open-Meteo forecast use that real, day-specific forecast.
-* Every other hour (cache too short, stale, or horizon beyond 5 days) is predicted by a
-  direct multi-horizon gradient-boosting model that sees the recent weather state
-  (last 24 h and 7 days), the same hour on the last two observed days, the horizon and the calendar.
-* Each hour also carries an uncertainty estimate (sigma) used by the optimizer's
-  Monte Carlo robustness check.
-"""
 import joblib
 import numpy as np
 import pandas as pd
@@ -45,11 +36,6 @@ def load_hourly(path) -> pd.DataFrame:
 
 
 def build_features(region, T, S, times, origin_idx, horizons):
-    """
-    Single source of truth for features (training and serving use this same function).
-    T, S: temperature / solar arrays on a regular hourly grid, `times` the matching index.
-    origin_idx: position of the last observed hour; horizons: hours ahead of that origin.
-    """
     ts, ss = pd.Series(T), pd.Series(S)
     t_mean = ts.rolling(24).mean().to_numpy()
     t_max = ts.rolling(24).max().to_numpy()
@@ -95,7 +81,7 @@ class ClimateForecaster:
         self._sigma = artifact["residual_std"]
         self._cache = {}
 
-    # ---------- helpers ----------
+    
     def _history(self, region: str) -> pd.DataFrame:
         path = CACHE_DIR / f"{region}_weather.csv"
         if not path.exists():
@@ -115,7 +101,7 @@ class ClimateForecaster:
         idx = np.searchsorted(edges, np.clip(lead_hours, 1, edges[-1]), side="left")
         return vals[idx]
 
-    # ---------- public API ----------
+   
     def get_forecast(self, region: str, hours_ahead: int = 120, now=None) -> pd.DataFrame:
         now = pd.Timestamp(now or now_ist()).replace(minute=0, second=0, microsecond=0)
         hours_ahead = int(max(1, hours_ahead))

@@ -21,7 +21,6 @@ class WorkloadOptimizer:
    
     @staticmethod
     def _plan_job(gpu_hours, deadline_days, is_flexible, n_gpus):
-        """Turn GPU hours into a real run length and a deadline-safe start window."""
         deadline_h = max(1, int(round(float(deadline_days) * 24)))
         buffer_h = max(MIN_DEADLINE_BUFFER_H, int(round(DEADLINE_BUFFER_FRAC * deadline_h)))
         usable_h = max(1, deadline_h - buffer_h)
