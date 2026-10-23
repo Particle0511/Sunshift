@@ -14,7 +14,7 @@ NUM_FEATURES = [
     "t_same_hour_2d", "s_same_hour_2d", "t_mean_7d",
 ]
 FEATURES = ["region"] + NUM_FEATURES
-API_TRUST = 0.6   # a numerical weather forecast is tighter than our ML residuals
+API_TRUST = 0.6  
 
 
 def contiguous_tail(df: pd.DataFrame) -> pd.DataFrame:
