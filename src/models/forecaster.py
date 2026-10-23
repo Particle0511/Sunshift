@@ -18,7 +18,6 @@ API_TRUST = 0.6   # a numerical weather forecast is tighter than our ML residual
 
 
 def contiguous_tail(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only the last gap-free hourly block (feature maths needs a regular grid)."""
     if len(df) < 2:
         return df
     gaps = np.where(np.diff(df.index.values) != np.timedelta64(1, "h"))[0]
