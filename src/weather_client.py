@@ -78,6 +78,6 @@ if __name__ == "__main__":
         print(f"Downloading {HISTORY_YEARS}-year history for {region}...")
         try:
             client.fetch_history(region)
-        except Exception as err:   # training falls back to the 30-day cache
+        except Exception as err:  
             print(f"  history download failed ({err}); training will use the 30-day cache only")
     print("All weather data cached in data/weather_cache/")
