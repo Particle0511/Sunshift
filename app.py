@@ -49,7 +49,7 @@ for _k, _v in PRIORITY_DEFAULTS.items():
     st.session_state.setdefault(f"{_k}_sld", _v)
     st.session_state.setdefault(f"{_k}_num", _v)
 
-for _k, _v in {"busy": False, "run": None, "error": None, "pending_inputs": None}.items():
+for _k, _v in {"run": None, "error": None}.items():
     st.session_state.setdefault(_k, _v)
 
 def sync_prio(key: str, from_widget: str):
@@ -136,8 +136,45 @@ section[data-testid="stSidebar"] {
   border-right: 1px solid var(--line) !important;
   box-shadow: 2px 0 12px rgba(26,23,19,.03);
 }
-section[data-testid="stSidebar"] .block-container {
-  padding: 1.5rem 1.2rem 3rem !important;
+[data-testid="stSidebarHeader"] {
+  padding: 0.5rem 1.2rem 0 !important;
+  min-height: 2rem !important;
+  height: auto !important;
+}
+section[data-testid="stSidebar"] .block-container,
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+  padding: 0.4rem 1.2rem 2.5rem !important;
+}
+
+/* Sidebar Brand Header */
+.sx-sb-brand {
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+.sx-sb-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sx-sb-word {
+  font-family: 'Inria Serif', Georgia, serif;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1;
+}
+.sx-sb-tag {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+  margin: 6px 0 8px;
+  line-height: 1.35;
+}
+.sx-sb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 
 /* Sidebar Section Headers */
@@ -1140,21 +1177,37 @@ def compute_run(inp: dict) -> dict:
 
 
 # =====================================================================================
-# Top Header Bar
+# Headers & Branding
 # =====================================================================================
-def render_top_header(run):
-    chips = "<span class='sx-chip'>National Grid</span><span class='sx-chip'>5 Indian Regions</span>"
+def render_sidebar_header(run):
+    chips = "<span class='sx-chip'></span><span class='sx-chip'></span>"
     if run:
         ts = run["meta_real"].get("forecast_timestamp")
         if isinstance(ts, datetime):
-            chips += f"<span class='sx-chip amber'><span class='sx-dot'></span>Forecast Sync: {esc(ts.strftime('%d %b, %I:%M %p'))}</span>"
+            chips += f"<span class='sx-chip green'><span class='sx-dot'></span>Sync: {esc(ts.strftime('%d %b, %I:%M %p'))}</span>"
         else:
-            chips += "<span class='sx-chip green'><span class='sx-dot'></span>Optimization Ready</span>"
+            chips += "<span class='sx-chip green'><span class='sx-dot'></span>Ready</span>"
+    return H(f"""<div class='sx-sb-brand'>
+        <div class='sx-sb-brand-row'>
+            <div class='sx-mark'></div>
+            <div class='sx-sb-word'>Sunshift</div>
+        </div>
+        <div class='sx-sb-tag'></div>
+        
+    </div>""")
+
+
+def render_top_header(run):
+    status_text = "Optimal Route Found" if run else "Optimization Engine Ready"
+    status_color = "green" if run else "amber"
+    chips = f"<span class='sx-chip {status_color}'><span class='sx-dot'></span>{status_text}</span>"
+    if run:
+        ts = run["meta_real"].get("forecast_timestamp")
+        if isinstance(ts, datetime):
+            chips += f"<span class='sx-chip'><span class='sx-dot'></span>Forecast Sync: {esc(ts.strftime('%d %b, %I:%M %p'))}</span>"
     return H(f"""<div class='sx-nav'>
         <div class='sx-brand'>
-            <div class='sx-mark'></div>
-            <div class='sx-word'>Sunshift</div>
-            <div class='sx-tag'>Temporal & Spatial AI Workload Placement</div>
+            <div class='sx-word' style='font-size:22px'>Optimization Dashboard</div>
         </div>
         <div class='sx-nav-r'>{chips}</div>
     </div>""")
@@ -1167,6 +1220,7 @@ st.markdown(render_top_header(st.session_state.run), unsafe_allow_html=True)
 # Sidebar: Workload Configuration (Sticky, Accessible, No Empty Gaps)
 # =====================================================================================
 with st.sidebar:
+    st.markdown(render_sidebar_header(st.session_state.run), unsafe_allow_html=True)
     html_block("<div class='sx-sb-sec'><span class='n'>1</span><b>Workload Profile</b><i></i></div>")
     gpu_hours = st.number_input(
         "GPU hours required",
@@ -1281,8 +1335,7 @@ with st.sidebar:
     run_clicked = st.button(
         " Find Best Place & Time",
         type="primary",
-        use_container_width=True,
-        disabled=st.session_state.busy
+        use_container_width=True
     )
 
 current_inputs = {
@@ -1297,11 +1350,15 @@ current_inputs = {
     "slider_values": (p_cost, p_carb, p_wat)
 }
 
-if run_clicked and not st.session_state.busy:
-    st.session_state.pending_inputs = current_inputs
-    st.session_state.busy = True
-    st.session_state.error = None
-    st.rerun()
+if run_clicked:
+    with st.sidebar:
+        with st.spinner("Optimizing regional placement and tariffs…"):
+            try:
+                st.session_state.run = compute_run(current_inputs)
+                st.session_state.error = None
+            except Exception as exc:
+                logger.exception("Optimization failed")
+                st.session_state.error = f"{type(exc).__name__}: {exc}"
 
 
 # =====================================================================================
@@ -1330,18 +1387,6 @@ def render_empty():
                 <b>3. Deploy & Export</b>
                 Inspect time-of-day timeline, delta savings, ready-to-apply Kubernetes manifests, and SEBI BRSR ESG compliance audit trails.
             </div>
-        </div>
-    </div>""")
-
-
-def render_loading():
-    html_block("""<div class='sx-card' role='status' aria-live='polite'>
-        <div class='sx-eyebrow'>Solving Multi-Variable Objective</div>
-        <div class='sx-serif' style='font-size:24px;font-weight:700;margin:6px 0 16px'>Analyzing regional tariffs, PUE thermal scaling & weather forecasts…</div>
-        <div class='sx-skel' style='height:140px;margin-bottom:14px'></div>
-        <div style='display:grid;grid-template-columns:1fr 1fr;gap:12px'>
-            <div class='sx-skel' style='height:200px'></div>
-            <div class='sx-skel' style='height:200px'></div>
         </div>
     </div>""")
 
@@ -1816,18 +1861,7 @@ def render_results(run, cur):
 # =====================================================================================
 # Main Execution Pipeline
 # =====================================================================================
-if st.session_state.busy:
-    render_loading()
-    try:
-        st.session_state.run = compute_run(st.session_state.pending_inputs)
-        st.session_state.error = None
-    except Exception as exc:
-        logger.exception("Optimization failed")
-        st.session_state.error = f"{type(exc).__name__}: {exc}"
-    finally:
-        st.session_state.busy = False
-    st.rerun()
-elif st.session_state.error:
+if st.session_state.error:
     render_error(st.session_state.error)
 elif st.session_state.run:
     render_results(st.session_state.run, current_inputs)
