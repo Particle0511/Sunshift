@@ -1856,7 +1856,7 @@ def render_results(run, cur):
             a_html = "".join(
                 f"<div class='sx-trow'><div class='n'>{esc(k.replace('_', ' '))}</div>"
                 f"<div class='d'>{esc(v.get('value', ''))} {esc(v.get('unit', ''))}<small>{esc(v.get('notes', ''))}</small></div>"
-                f"<div><span class='sx-chip amber'>Assumption</span></div></div>"
+                f"<div></div></div>"
                 for k, v in report.get("assumptions", {}).items()
             )
             html_block(f"<div class='sx-card' style='padding:6px 20px'>{a_html}</div>")
